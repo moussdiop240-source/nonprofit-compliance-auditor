@@ -100,3 +100,56 @@ def build_graph():
     except Exception as e:
         logger.warning("LangGraph compilation failed (%s) — using run_graph()", e)
         return run_graph
+
+
+def build_langgraph():
+    """
+    Build a compiled LangGraph StateGraph with MemorySaver checkpointer
+    and interrupt_before=["human_review"] for real HITL support.
+
+    Returns:
+        Compiled LangGraph graph (supports .stream(), .get_state(), .update_state()),
+        or None if LangGraph / MemorySaver is unavailable.
+    """
+    try:
+        from langgraph.graph import StateGraph, END
+        from agents.state import AuditState
+
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+        except ImportError:
+            from langgraph.checkpoint import MemorySaver  # older langgraph
+
+        def _compliance_router(state: dict) -> str:
+            return (
+                "human_review"
+                if state.get("items_pending_human_review")
+                else "report"
+            )
+
+        graph = StateGraph(AuditState)
+        graph.add_node("extract", extract_expenses)
+        graph.add_node("compliance", check_compliance)
+        graph.add_node("human_review", human_review_node)
+        graph.add_node("report", write_audit_report)
+        graph.set_entry_point("extract")
+        graph.add_edge("extract", "compliance")
+        graph.add_conditional_edges(
+            "compliance",
+            _compliance_router,
+            {"human_review": "human_review", "report": "report"},
+        )
+        graph.add_edge("human_review", "report")
+        graph.add_edge("report", END)
+
+        memory = MemorySaver()
+        compiled = graph.compile(
+            checkpointer=memory,
+            interrupt_before=["human_review"],
+        )
+        logger.info("LangGraph compiled with MemorySaver + interrupt_before=['human_review']")
+        return compiled
+
+    except Exception as e:
+        logger.warning("build_langgraph failed (%s) — caller should fall back to run_graph()", e)
+        return None
