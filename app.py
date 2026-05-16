@@ -21,6 +21,7 @@ from agents.compliance_checker import check_compliance
 from agents.report_writer import write_audit_report
 from graph.hitl_handler import human_review_node
 from graph.multi_agent_graph import build_langgraph, run_graph
+from vectorstores.cfr200_store import get_store_version, reindex as cfr200_reindex
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -114,6 +115,29 @@ with st.sidebar:
 
 </div>
 """, unsafe_allow_html=True)
+    st.divider()
+
+    # CFR200 regulatory knowledge base controls
+    st.markdown("**2 CFR 200 Knowledge Base**")
+    _cfr_version = get_store_version()
+    if _cfr_version:
+        st.caption(f"Index version: `{_cfr_version}`")
+    else:
+        st.caption("Index: not yet loaded")
+
+    with st.expander("Update regulatory index"):
+        st.markdown(
+            "Drop updated 2 CFR 200 PDFs into `data/cfr200_docs/` then click **Reindex** "
+            "to rebuild the knowledge base without restarting the app."
+        )
+        if st.button("Reindex CFR200 Store", use_container_width=True):
+            with st.spinner("Rebuilding 2 CFR 200 vector index…"):
+                try:
+                    cfr200_reindex()
+                    st.success(f"Reindexed — new version: `{get_store_version()}`")
+                except Exception as _e:
+                    st.error(f"Reindex failed: {_e}")
+
     st.divider()
     st.caption("2026 IRS / GAAP standards | SHA-256 ledger integrity")
 

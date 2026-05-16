@@ -5,6 +5,27 @@ from datetime import datetime
 
 llm = ChatOllama(model="llama3.2", temperature=0.1)
 
+_MAX_DECISIONS_IN_PROMPT = 60
+
+
+def _format_decisions(decisions: list) -> str:
+    """Render compliance decisions as a concise text table for the LLM prompt."""
+    lines = []
+    for d in decisions[:_MAX_DECISIONS_IN_PROMPT]:
+        conf = d.get("confidence_score")
+        conf_str = f" conf={conf:.2f}" if isinstance(conf, float) else ""
+        human_note = f" | Reviewer: {d['human_review_note']}" if d.get("human_review_note") else ""
+        lines.append(
+            f"#{d.get('line_number','?')} | {d.get('description','')[:55]} | "
+            f"${d.get('amount', 0):,.2f} | {d.get('category','N/A')} | "
+            f"[{d.get('status','')}] | Reg: {d.get('regulation_cited','N/A')} | "
+            f"{d.get('reasoning','')[:80]}{conf_str}{human_note}"
+        )
+    if len(decisions) > _MAX_DECISIONS_IN_PROMPT:
+        lines.append(f"... and {len(decisions) - _MAX_DECISIONS_IN_PROMPT} additional items (all reviewed)")
+    return "\n".join(lines)
+
+
 def write_audit_report(state: dict) -> dict:
     """
     Agent 3: Generates a professional, formatted compliance audit report.
@@ -16,19 +37,32 @@ def write_audit_report(state: dict) -> dict:
     needs_review = [d for d in decisions if d["status"] == "REQUIRES_REVIEW"]
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a nonprofit audit report writer. Generate a professional markdown audit report summarizing the compliance review."),
+        ("system", (
+            "You are a nonprofit audit report writer specializing in 2 CFR 200 federal grant compliance. "
+            "Generate a professional markdown audit report with: "
+            "(1) executive summary, "
+            "(2) a detailed findings table listing every line item with its status, regulation cited, and reasoning, "
+            "(3) a section on flagged/unallowable items with specific remediation steps, "
+            "(4) actionable recommendations. "
+            "Use the exact line item data provided — do not invent or generalize."
+        )),
         ("human", """
-        Organization: {org}
-        Grant: {grant}
-        Date: {date}
-        
-        Allowable items ({num_allowable}): ${allowable_total:,.2f}
-        Unallowable items ({num_unallowable}): ${unallowable_total:,.2f}
-        Conditionally allowable ({num_conditional})
-        Items needing review ({num_review})
-        
-        Provide an executive summary, detailed findings table, and recommendations.
-        """)
+Organization: {org}
+Grant: {grant}
+Audit Date: {date}
+
+SUMMARY TOTALS:
+- Allowable ({num_allowable} items): ${allowable_total:,.2f}
+- Unallowable ({num_unallowable} items): ${unallowable_total:,.2f}
+- Conditionally Allowable: {num_conditional} items
+- Requires Review: {num_review} items
+
+DETAILED LINE ITEM DECISIONS:
+(Format: #No | Description | Amount | Category | [Status] | Reg: Citation | Reasoning | ML Confidence)
+{decisions_detail}
+
+Generate the full audit report in markdown:
+""")
     ])
     chain = prompt | llm | StrOutputParser()
     report = chain.invoke({
@@ -40,7 +74,8 @@ def write_audit_report(state: dict) -> dict:
         "num_unallowable": len(unallowable),
         "unallowable_total": state["total_unallowable"],
         "num_conditional": len(conditional),
-        "num_review": len(needs_review)
+        "num_review": len(needs_review),
+        "decisions_detail": _format_decisions(decisions),
     })
 
     new_message = {
