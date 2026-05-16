@@ -26,6 +26,15 @@ from rag_layer.entity_mapper import create_session as _em_create, complete_sessi
 from rag_layer.pseudonymizer import pseudonymize, redaction_summary
 from rag_layer.retention_policy import run_all as run_retention
 from rag_layer.access_control import require_auth, logout, current_role, current_user, has_permission
+from tools.vectorstore_maintenance import full_maintenance_report
+from tools.visualization_tools import (
+    compliance_breakdown_chart,
+    expense_by_category_chart,
+    confidence_distribution_chart,
+    allowable_vs_unallowable_bar,
+    render_chart,
+)
+from tools.excel_report_formatter import generate_excel_report
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -163,6 +172,23 @@ with st.sidebar:
     # Admin-only panel
     if has_permission(_role or "", "admin_panel"):
         with st.expander("🔐 Admin Panel"):
+            st.markdown("**Vector Store Health**")
+            if st.button("Run Maintenance Check", use_container_width=True):
+                with st.spinner("Inspecting vector stores…"):
+                    report = full_maintenance_report()
+                cfr = report["cfr200"]
+                st.caption(
+                    f"CFR200 — version: `{cfr.get('version','?')}` | "
+                    f"docs: `{cfr.get('doc_count','?')}` | "
+                    f"latency: `{cfr.get('latency_ms','?')} ms` | "
+                    f"{'✅ healthy' if cfr.get('healthy') else '⚠️ unavailable'}"
+                )
+                gs = report["grant_stores"]
+                st.caption(
+                    f"Grant stores cached: `{gs.get('store_count',0)}` | "
+                    f"total size: `{gs.get('total_size_mb',0):.1f} MB`"
+                )
+            st.divider()
             st.markdown("**Data Retention Policy**")
             s_days = st.number_input("Session retention (days)", value=365, min_value=1, key="ret_session_days")
             v_days = st.number_input("Store retention (days)", value=90, min_value=1, key="ret_store_days")
@@ -543,12 +569,12 @@ if result:
     if _pii_note:
         st.info(f"🔒 {_pii_note} — no raw PII was sent to the LLM.")
 
-    _tabs_labels = ["📄 Extracted Line Items", "✅ Compliance Decisions", "📋 Audit Report", "🔄 Workflow Log"]
+    _tabs_labels = ["📄 Extracted Line Items", "✅ Compliance Decisions", "📋 Audit Report", "📈 Visualizations", "🔄 Workflow Log"]
     _show_admin_log = has_permission(current_role(st.session_state) or "", "view_log")
     if _show_admin_log:
         _tabs_labels.append("📊 Audit Log")
     _tabs = st.tabs(_tabs_labels)
-    tab_items, tab_decisions, tab_report, tab_log = _tabs[:4]
+    tab_items, tab_decisions, tab_report, tab_viz, tab_log = _tabs[:5]
 
     with tab_items:
         items = result.get("extracted_line_items", [])
@@ -602,7 +628,8 @@ if result:
             pdf_bytes = st.session_state.get("pdf_bytes")
             if pdf_bytes:
                 gn = result.get("grant_number", "report").replace("/", "-").replace(" ", "_")
-                st.download_button(
+                dl_col1, dl_col2 = st.columns(2)
+                dl_col1.download_button(
                     label="⬇️  Download Audit Report (PDF)",
                     data=pdf_bytes,
                     file_name=f"audit_report_{gn}.pdf",
@@ -610,8 +637,51 @@ if result:
                     type="primary",
                     use_container_width=True,
                 )
+                try:
+                    _xlsx_bytes = generate_excel_report(result)
+                    dl_col2.download_button(
+                        label="⬇️  Download Audit Report (Excel)",
+                        data=_xlsx_bytes,
+                        file_name=f"audit_report_{gn}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                except Exception as _xe:
+                    dl_col2.warning(f"Excel export unavailable: {_xe}")
         else:
             st.info("Report not yet generated.")
+
+    with tab_viz:
+        st.subheader("Compliance Visualizations")
+        _decisions = result.get("compliance_decisions", [])
+        _items     = result.get("extracted_line_items", [])
+        _allowable    = result.get("total_allowable", 0.0)
+        _unallowable  = result.get("total_unallowable", 0.0)
+        _conditional  = sum(
+            d.get("amount", 0) for d in _decisions
+            if d.get("status") == "CONDITIONALLY_ALLOWABLE"
+        )
+
+        vc1, vc2 = st.columns(2)
+        with vc1:
+            render_chart(
+                compliance_breakdown_chart(_decisions),
+                "Compliance breakdown chart requires plotly — pip install plotly",
+            )
+        with vc2:
+            render_chart(
+                allowable_vs_unallowable_bar(_allowable, _unallowable, _conditional),
+                "Dollar totals chart requires plotly — pip install plotly",
+            )
+
+        render_chart(
+            expense_by_category_chart(_items),
+            "Category chart requires plotly — pip install plotly",
+        )
+        render_chart(
+            confidence_distribution_chart(_decisions),
+            "Confidence chart requires plotly — pip install plotly",
+        )
 
     with tab_log:
         messages = result.get("messages", [])
@@ -623,7 +693,7 @@ if result:
             st.info("No workflow messages logged.")
 
     if _show_admin_log:
-        with _tabs[4]:
+        with _tabs[5]:
             st.subheader("Audit Session Log")
             st.caption("SHA-256 hashes only — no raw document text is stored.")
             try:

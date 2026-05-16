@@ -33,6 +33,9 @@ xlrd>=2.0.1
 # ── ML / NLP (Enhancement 2 — TF-IDF confidence scoring) ─────────────────────
 scikit-learn>=1.4.0
 
+# ── Visualization ─────────────────────────────────────────────────────────────
+plotly>=5.18.0
+
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=8.0.0
 pytest-mock>=3.14.0
