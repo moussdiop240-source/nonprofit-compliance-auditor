@@ -1,7 +1,8 @@
 import json
-import ollama
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from tools.nlp_utils import preprocess_expense_text, build_nlp_hint_block
 
 EXTRACTOR_SYSTEM_PROMPT = """You are an expert financial document analyst specializing in nonprofit expense reports.
 Your job is to extract ALL expense line items from the provided expense report.
@@ -28,7 +29,13 @@ Example format:
 def extract_expenses(state: dict) -> dict:
     """
     Agent 1: Extracts structured line items from expense report using local Ollama.
+    Enhancement 1: NLP preprocessing is applied before LLM extraction.
     """
+    # Enhancement 1 — NLP preprocessing (prepended, original logic unchanged below)
+    preprocessed = preprocess_expense_text(state["expense_report_text"])
+    nlp_hints = build_nlp_hint_block(preprocessed)
+    augmented_text = nlp_hints + "\n\n" + state["expense_report_text"]
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", EXTRACTOR_SYSTEM_PROMPT),
         ("human", "Expense Report:\n\n{expense_report}")
@@ -36,7 +43,7 @@ def extract_expenses(state: dict) -> dict:
     # Use Ollama's model via LangChain
     llm = ChatOllama(model="llama3.2", temperature=0)
     chain = prompt | llm | StrOutputParser()
-    result = chain.invoke({"expense_report": state["expense_report_text"]})
+    result = chain.invoke({"expense_report": augmented_text})
 
     try:
         content = result.strip()

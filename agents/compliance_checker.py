@@ -1,8 +1,33 @@
 import json
+import logging
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from tools.rag_tools import query_cfr200_store, query_grant_store
+
+logger = logging.getLogger(__name__)
+
+# Enhancement 2 — TF-IDF confidence threshold
+_CONFIDENCE_THRESHOLD = 0.7
+
+
+def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
+    """
+    Enhancement 2: TF-IDF cosine similarity between expense description and RAG context.
+    Returns a float in [0, 1]. Falls back to 1.0 if sklearn is unavailable.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        corpus = [description, rag_context]
+        vectorizer = TfidfVectorizer(stop_words="english")
+        tfidf_matrix = vectorizer.fit_transform(corpus)
+        score = float(cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0])
+        return score
+    except Exception as e:
+        logger.warning("TF-IDF confidence computation failed: %s", e)
+        return 1.0  # Assume high confidence on error so LLM decision stands
 
 llm = ChatOllama(model="llama3.2", temperature=0)
 
@@ -90,6 +115,22 @@ Compliance determination (JSON only):
                 "requires_human_review": True,
                 "flagged_reason": "System parsing error"
             }
+
+        # Enhancement 2 — ML confidence scoring via TF-IDF cosine similarity
+        combined_context = cfr_context + " " + grant_context
+        confidence = _compute_tfidf_confidence(item["description"], combined_context)
+        decision["confidence_score"] = round(confidence, 4)
+        if confidence < _CONFIDENCE_THRESHOLD:
+            logger.info(
+                "Low confidence (%.2f) for '%s' — overriding to REQUIRES_REVIEW",
+                confidence, item["description"][:50]
+            )
+            decision["status"] = "REQUIRES_REVIEW"
+            decision["requires_human_review"] = True
+            decision.setdefault(
+                "flagged_reason",
+                f"Low RAG confidence score ({confidence:.0%}); manual review recommended",
+            )
 
         full_decision = {**item, **decision}
         compliance_decisions.append(full_decision)
