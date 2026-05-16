@@ -26,6 +26,9 @@ htmlcov/
 
 # Data (uploaded documents — keep sample_documents tracked)
 data/cfr200_docs/
+data/audit_log.db
+data/test_audit_report.pdf
+data/test_audit_report.xlsx
 
 # Claude Code
 .claude/
