@@ -41,31 +41,38 @@ def load_cfr200_store(persist_dir: str = PERSIST_DIR) -> Optional[Any]:
         _store_instance = None
         return None
 
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    try:
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    if os.path.exists(persist_dir):
-        _store_instance = Chroma(
-            persist_directory=persist_dir, embedding_function=embeddings
-        )
+        if os.path.exists(persist_dir):
+            _store_instance = Chroma(
+                persist_directory=persist_dir, embedding_function=embeddings
+            )
+            _store_version = _compute_dir_hash(CFR200_DIR)
+            logger.info("Loaded existing CFR200 store (version=%s)", _store_version)
+            return _store_instance
+
+        # Build from PDFs or fallback docs
+        docs = _load_pdfs_from_dir(CFR200_DIR)
+        if docs:
+            _store_instance = Chroma.from_documents(
+                docs, embeddings, persist_directory=persist_dir
+            )
+        else:
+            _store_instance = Chroma(
+                persist_directory=persist_dir, embedding_function=embeddings
+            )
+            _add_fallback_cfr200_docs(_store_instance)
+
         _store_version = _compute_dir_hash(CFR200_DIR)
-        logger.info("Loaded existing CFR200 store (version=%s)", _store_version)
+        logger.info("Created CFR200 store (version=%s)", _store_version)
         return _store_instance
 
-    # Build from PDFs or fallback docs
-    docs = _load_pdfs_from_dir(CFR200_DIR)
-    if docs:
-        _store_instance = Chroma.from_documents(
-            docs, embeddings, persist_directory=persist_dir
-        )
-    else:
-        _store_instance = Chroma(
-            persist_directory=persist_dir, embedding_function=embeddings
-        )
-        _add_fallback_cfr200_docs(_store_instance)
-
-    _store_version = _compute_dir_hash(CFR200_DIR)
-    logger.info("Created CFR200 store (version=%s)", _store_version)
-    return _store_instance
+    except (ImportError, Exception) as e:
+        logger.warning("CFR200 vector store unavailable (%s) — using fallback text", e)
+        _store_version = "stub-" + datetime.now().strftime("%Y%m%d")
+        _store_instance = None
+        return None
 
 
 def reindex(
