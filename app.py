@@ -52,18 +52,95 @@ with st.sidebar:
         "Grant Number", placeholder="e.g. 2024-HHS-001", key="grant_number"
     )
     st.divider()
-    st.markdown("**Architecture**")
-    st.markdown(
-        "```\n"
-        "[Supervisor]\n"
-        "   ├── Agent 1: Expense Extractor\n"
-        "   ├── Agent 2: Compliance Checker\n"
-        "   ├── HITL:    Human Review\n"
-        "   └── Agent 3: Report Writer\n"
-        "```"
-    )
+    st.markdown("**Workflow Architecture**")
+    st.markdown("""
+<div style="font-family:sans-serif; font-size:12px; padding:4px 0;">
+
+  <div style="
+      background:linear-gradient(135deg,#1e3a5f,#2c5282);
+      color:white; border-radius:10px; padding:9px 12px;
+      text-align:center; font-weight:700; font-size:13px;
+      box-shadow:0 2px 6px rgba(0,0,0,0.25); letter-spacing:.4px;">
+    🎯 Supervisor
+  </div>
+
+  <div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.4;">↓</div>
+
+  <div style="
+      background:#eff6ff; border-left:4px solid #3b82f6;
+      border-radius:6px; padding:7px 11px; margin-bottom:3px;">
+    <span style="color:#1d4ed8;font-weight:700;">① Expense Extractor</span><br>
+    <span style="color:#475569;">NLP pre-analysis + Ollama</span>
+  </div>
+
+  <div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.4;">↓</div>
+
+  <div style="
+      background:#f0fdf4; border-left:4px solid #22c55e;
+      border-radius:6px; padding:7px 11px; margin-bottom:3px;">
+    <span style="color:#15803d;font-weight:700;">② Compliance Checker</span><br>
+    <span style="color:#475569;">2 CFR 200 RAG + TF-IDF</span>
+  </div>
+
+  <div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.4;">↓</div>
+
+  <div style="
+      background:#fffbeb; border-left:4px solid #f59e0b;
+      border-radius:6px; padding:7px 11px; margin-bottom:3px;">
+    <span style="color:#b45309;font-weight:700;">⚠ HITL Human Review</span><br>
+    <span style="color:#475569;">Flagged &amp; low-confidence items</span>
+  </div>
+
+  <div style="text-align:center;color:#94a3b8;font-size:20px;line-height:1.4;">↓</div>
+
+  <div style="
+      background:#fdf4ff; border-left:4px solid #a855f7;
+      border-radius:6px; padding:7px 11px;">
+    <span style="color:#7e22ce;font-weight:700;">③ Report Writer</span><br>
+    <span style="color:#475569;">Markdown → PDF audit report</span>
+  </div>
+
+</div>
+""", unsafe_allow_html=True)
     st.divider()
     st.caption("2026 IRS / GAAP standards | SHA-256 ledger integrity")
+
+# ── File preview helper ───────────────────────────────────────────────────────
+def _render_file_preview(uploaded_file) -> None:
+    """Render a collapsible preview of a PDF or Excel upload."""
+    ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+    with st.expander(f"👁️ Preview — {uploaded_file.name}", expanded=False):
+        if ext in ("xlsx", "xls"):
+            try:
+                import pandas as pd
+                import io as _io
+                sheets = pd.read_excel(
+                    _io.BytesIO(uploaded_file.getvalue()),
+                    sheet_name=None,
+                    engine="openpyxl" if ext == "xlsx" else "xlrd",
+                    dtype=str,
+                )
+                for sheet_name, df in sheets.items():
+                    df = df.dropna(how="all").fillna("")
+                    if df.empty:
+                        continue
+                    st.caption(f"Sheet: **{sheet_name}** — {len(df)} row(s), {len(df.columns)} column(s)")
+                    st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.warning(f"Could not preview Excel file: {e}")
+        else:
+            try:
+                text = extract_text_from_pdf(io.BytesIO(uploaded_file.getvalue()))
+                if text.strip():
+                    preview = text[:2000] + ("…" if len(text) > 2000 else "")
+                    st.text_area("Extracted text (first 2 000 chars)", preview,
+                                 height=220, disabled=True, label_visibility="collapsed")
+                    st.caption(f"Total extracted: {len(text):,} characters")
+                else:
+                    st.warning("No text could be extracted — file may be image-only.")
+            except Exception as e:
+                st.warning(f"Could not preview PDF: {e}")
+
 
 # ── File upload ───────────────────────────────────────────────────────────────
 col_left, col_right = st.columns(2)
@@ -79,6 +156,7 @@ with col_left:
     )
     if expense_file:
         st.success(f"✓ {expense_file.name}  ({expense_file.size:,} bytes)")
+        _render_file_preview(expense_file)
 
 with col_right:
     grant_file = st.file_uploader(
@@ -89,6 +167,7 @@ with col_right:
     )
     if grant_file:
         st.success(f"✓ {grant_file.name}  ({grant_file.size:,} bytes)")
+        _render_file_preview(grant_file)
 
 # ── Run audit ─────────────────────────────────────────────────────────────────
 st.divider()
