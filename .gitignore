@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Vector store / Chroma
+chroma_cfr200/
+chroma_grant_*/
+*.chroma
+
+# HuggingFace model cache
+.cache/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit
+.streamlit/
+
+# Data (uploaded documents — keep sample_documents tracked)
+data/cfr200_docs/
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
