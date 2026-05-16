@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  # ── Streamlit compliance auditor app ────────────────────────────────────────
+  app:
+    build: .
+    container_name: nonprofit-compliance-auditor
+    ports:
+      - "8501:8501"
+    environment:
+      # Point the app at the Ollama sidecar
+      - OLLAMA_HOST=http://ollama:11434
+      # CFR 200 document directory (mount real PDFs here)
+      - CFR200_DIR=/app/data/cfr200_docs
+      - CFR200_PERSIST_DIR=/app/chroma_cfr200
+    volumes:
+      # Persist the Chroma vector index across restarts
+      - chroma_data:/app/chroma_cfr200
+      # Mount real 2 CFR 200 PDFs into the container:
+      #   docker-compose up -v ./my-cfr200-pdfs:/app/data/cfr200_docs
+      - cfr200_docs:/app/data/cfr200_docs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - audit_net
+
+  # ── Local Ollama LLM server ─────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - audit_net
+
+  # ── One-off model pull (runs once, then exits) ──────────────────────────────
+  model-puller:
+    image: ollama/ollama:latest
+    container_name: ollama-puller
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "ollama pull llama3.2 &&
+             echo 'Model llama3.2 ready'"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    networks:
+      - audit_net
+    restart: "no"
+
+volumes:
+  chroma_data:
+  cfr200_docs:
+  ollama_data:
+
+networks:
+  audit_net:
+    driver: bridge
