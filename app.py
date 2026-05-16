@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
 
-from tools.pdf_tools import extract_text_from_pdf, extract_metadata_from_pdf
+from tools.pdf_tools import extract_text_from_pdf, extract_metadata_from_pdf, extract_text_from_file
 from tools.formatting_tools import generate_pdf
 from agents.expense_extractor import extract_expenses
 from agents.compliance_checker import check_compliance
@@ -68,11 +68,13 @@ with st.sidebar:
 # ── File upload ───────────────────────────────────────────────────────────────
 col_left, col_right = st.columns(2)
 
+_ACCEPTED_TYPES = ["pdf", "xlsx", "xls"]
+
 with col_left:
     expense_file = st.file_uploader(
-        "📄 Expense Report PDF",
-        type=["pdf"],
-        help="Upload the nonprofit's expense report",
+        "📄 Expense Report (PDF or Excel)",
+        type=_ACCEPTED_TYPES,
+        help="Upload the nonprofit's expense report — PDF or Excel (.xlsx / .xls)",
         key="expense_upload",
     )
     if expense_file:
@@ -80,9 +82,9 @@ with col_left:
 
 with col_right:
     grant_file = st.file_uploader(
-        "📑 Grant Agreement PDF",
-        type=["pdf"],
-        help="Upload the corresponding federal grant agreement",
+        "📑 Grant Agreement (PDF or Excel)",
+        type=_ACCEPTED_TYPES,
+        help="Upload the corresponding federal grant agreement — PDF or Excel (.xlsx / .xls)",
         key="grant_upload",
     )
     if grant_file:
@@ -111,16 +113,28 @@ if run_btn and expense_file and grant_file:
         status.info(msg)
 
     try:
-        # ── Extract PDF text ──────────────────────────────────────────────────
-        _update(5, "Extracting text from PDFs…")
-        expense_text = extract_text_from_pdf(io.BytesIO(expense_file.getvalue()))
-        grant_text = extract_text_from_pdf(io.BytesIO(grant_file.getvalue()))
+        # ── Extract text from uploaded files (PDF or Excel) ──────────────────
+        _update(5, "Extracting text from uploaded files…")
+        expense_text = extract_text_from_file(
+            io.BytesIO(expense_file.getvalue()), expense_file.name
+        )
+        grant_text = extract_text_from_file(
+            io.BytesIO(grant_file.getvalue()), grant_file.name
+        )
 
         if not expense_text.strip():
-            st.error("Could not extract text from the expense report PDF. Ensure it is not scanned/image-only.")
+            st.error(
+                "Could not extract text from the expense report. "
+                "For PDFs, ensure the file is not scanned/image-only. "
+                "For Excel files, ensure the workbook contains data."
+            )
             st.stop()
         if not grant_text.strip():
-            st.error("Could not extract text from the grant agreement PDF.")
+            st.error(
+                "Could not extract text from the grant agreement. "
+                "For PDFs, ensure the file is not scanned/image-only. "
+                "For Excel files, ensure the workbook contains data."
+            )
             st.stop()
 
         # ── Build initial state ───────────────────────────────────────────────
