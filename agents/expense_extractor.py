@@ -16,14 +16,14 @@ For each line item, extract:
 Return ONLY a valid JSON array. No explanation. No markdown.
 Example format:
 [
-  {
+  {{
     "line_number": 1,
     "description": "Flight to conference",
     "amount": 450.00,
     "category": "travel",
     "vendor": "Delta Airlines",
     "date": "2024-03-15"
-  }
+  }}
 ]"""
 
 def extract_expenses(state: dict) -> dict:
