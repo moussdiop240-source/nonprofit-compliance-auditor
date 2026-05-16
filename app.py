@@ -22,6 +22,10 @@ from agents.report_writer import write_audit_report
 from graph.hitl_handler import human_review_node
 from graph.multi_agent_graph import build_langgraph, run_graph
 from vectorstores.cfr200_store import get_store_version, reindex as cfr200_reindex
+from rag_layer.entity_mapper import create_session as _em_create, complete_session as _em_complete, list_sessions as _em_list
+from rag_layer.pseudonymizer import pseudonymize, redaction_summary
+from rag_layer.retention_policy import run_all as run_retention
+from rag_layer.access_control import require_auth, logout, current_role, current_user, has_permission
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -39,9 +43,17 @@ for _key, _val in {
     "pre_hitl_state": None,  # AuditState snapshot at interrupt point
     "audit_result": None,
     "pdf_bytes": None,
+    "auth_role": None,
+    "auth_user": None,
+    "audit_session_id": None,
+    "pii_redaction_summary": None,
 }.items():
     if _key not in st.session_state:
         st.session_state[_key] = _val
+
+# ── Authentication gate ───────────────────────────────────────────────────────
+if not require_auth(st.session_state):
+    st.stop()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📋 Nonprofit Federal Grant Compliance Auditor")
@@ -53,6 +65,14 @@ st.divider()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
+    # User badge + logout
+    _role = current_role(st.session_state)
+    _user = current_user(st.session_state)
+    st.caption(f"Signed in as **{_user}** ({_role})")
+    if st.button("Sign Out", use_container_width=True):
+        logout(st.session_state)
+        st.rerun()
+    st.divider()
     st.header("⚙️ Organization Details")
     org_name = st.text_input(
         "Organization Name", placeholder="e.g. Community Impact Org", key="org_name"
@@ -137,6 +157,22 @@ with st.sidebar:
                     st.success(f"Reindexed — new version: `{get_store_version()}`")
                 except Exception as _e:
                     st.error(f"Reindex failed: {_e}")
+
+    st.divider()
+
+    # Admin-only panel
+    if has_permission(_role or "", "admin_panel"):
+        with st.expander("🔐 Admin Panel"):
+            st.markdown("**Data Retention Policy**")
+            s_days = st.number_input("Session retention (days)", value=365, min_value=1, key="ret_session_days")
+            v_days = st.number_input("Store retention (days)", value=90, min_value=1, key="ret_store_days")
+            if st.button("Run Retention Sweep", use_container_width=True):
+                with st.spinner("Running retention sweep…"):
+                    summary = run_retention(session_retention_days=int(s_days), store_retention_days=int(v_days))
+                st.success(
+                    f"Purged {summary['sessions_deleted']} session(s) and "
+                    f"{summary['stores_removed']} store(s)."
+                )
 
     st.divider()
     st.caption("2026 IRS / GAAP standards | SHA-256 ledger integrity")
@@ -255,6 +291,23 @@ if run_btn and expense_file and grant_file:
             )
             st.stop()
 
+        # Pseudonymize PII before any text reaches the LLM
+        _update(8, "Applying PII pseudonymization…")
+        expense_text, _exp_counts = pseudonymize(expense_text)
+        grant_text, _grant_counts = pseudonymize(grant_text)
+        _all_counts = {k: _exp_counts.get(k, 0) + _grant_counts.get(k, 0)
+                       for k in set(_exp_counts) | set(_grant_counts)}
+        st.session_state["pii_redaction_summary"] = redaction_summary(_all_counts)
+
+        # Open a new audit session record (stores only SHA-256 hashes)
+        _session_id = _em_create(
+            organization=org_name or "Unknown Organization",
+            grant_number=grant_number or "Unknown Grant",
+            expense_text=expense_text,
+            grant_text=grant_text,
+        )
+        st.session_state["audit_session_id"] = _session_id
+
         initial_state: dict = {
             "expense_report_text": expense_text,
             "grant_agreement_text": grant_text,
@@ -317,6 +370,12 @@ if run_btn and expense_file and grant_file:
                 final_state = dict(snapshot.values)
                 _update(90, "Generating PDF…")
                 pdf_bytes = generate_pdf(final_state.get("audit_report_markdown", ""))
+                _em_complete(
+                    _session_id,
+                    item_count=len(final_state.get("extracted_line_items", [])),
+                    allowable=final_state.get("total_allowable", 0.0),
+                    unallowable=final_state.get("total_unallowable", 0.0),
+                )
                 st.session_state.update({
                     "audit_result": final_state,
                     "pdf_bytes": pdf_bytes,
@@ -347,6 +406,12 @@ if run_btn and expense_file and grant_file:
             _update(90, "Report generated — rendering PDF…")
 
             pdf_bytes = generate_pdf(state.get("audit_report_markdown", ""))
+            _em_complete(
+                _session_id,
+                item_count=len(state.get("extracted_line_items", [])),
+                allowable=state.get("total_allowable", 0.0),
+                unallowable=state.get("total_unallowable", 0.0),
+            )
             st.session_state.update({
                 "audit_result": state,
                 "pdf_bytes": pdf_bytes,
@@ -438,6 +503,14 @@ if st.session_state.get("audit_phase") == "hitl_pending":
 
             final_state = dict(compiled.get_state(config).values)
             pdf_bytes = generate_pdf(final_state.get("audit_report_markdown", ""))
+            _sid = st.session_state.get("audit_session_id")
+            if _sid:
+                _em_complete(
+                    _sid,
+                    item_count=len(final_state.get("extracted_line_items", [])),
+                    allowable=final_state.get("total_allowable", 0.0),
+                    unallowable=final_state.get("total_unallowable", 0.0),
+                )
             st.session_state.update({
                 "audit_result": final_state,
                 "pdf_bytes": pdf_bytes,
@@ -465,9 +538,17 @@ if result:
 
     st.divider()
 
-    tab_items, tab_decisions, tab_report, tab_log = st.tabs(
-        ["📄 Extracted Line Items", "✅ Compliance Decisions", "📋 Audit Report", "🔄 Workflow Log"]
-    )
+    # PII redaction notice
+    _pii_note = st.session_state.get("pii_redaction_summary")
+    if _pii_note:
+        st.info(f"🔒 {_pii_note} — no raw PII was sent to the LLM.")
+
+    _tabs_labels = ["📄 Extracted Line Items", "✅ Compliance Decisions", "📋 Audit Report", "🔄 Workflow Log"]
+    _show_admin_log = has_permission(current_role(st.session_state) or "", "view_log")
+    if _show_admin_log:
+        _tabs_labels.append("📊 Audit Log")
+    _tabs = st.tabs(_tabs_labels)
+    tab_items, tab_decisions, tab_report, tab_log = _tabs[:4]
 
     with tab_items:
         items = result.get("extracted_line_items", [])
@@ -540,3 +621,17 @@ if result:
                 st.info(f"{icon} **{msg.get('agent', 'System')}** — {msg.get('action', '')}")
         else:
             st.info("No workflow messages logged.")
+
+    if _show_admin_log:
+        with _tabs[4]:
+            st.subheader("Audit Session Log")
+            st.caption("SHA-256 hashes only — no raw document text is stored.")
+            try:
+                import pandas as pd
+                sessions = _em_list(limit=200)
+                if sessions:
+                    st.dataframe(pd.DataFrame(sessions), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No audit sessions recorded yet.")
+            except Exception as _e:
+                st.warning(f"Could not load audit log: {_e}")
