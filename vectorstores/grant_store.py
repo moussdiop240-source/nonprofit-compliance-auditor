@@ -2,6 +2,7 @@
 Dynamic grant agreement vector store.
 Creates a temporary Chroma collection from a single grant document text.
 """
+import hashlib
 import logging
 import uuid
 from typing import Optional, Dict, Any
@@ -74,7 +75,9 @@ def query_grant_store(grant_text: str, query: str, k: int = 3) -> str:
     Returns:
         Concatenated relevant excerpts as a single string.
     """
-    result = create_grant_store(grant_text)
+    # Stable ID derived from content so the cache hits on repeated queries for the same grant
+    stable_id = hashlib.sha256(grant_text[:2000].encode()).hexdigest()[:12]
+    result = create_grant_store(grant_text, store_id=stable_id)
 
     if result.get("store") is not None:
         try:

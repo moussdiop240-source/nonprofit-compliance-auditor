@@ -25,6 +25,7 @@ class ComplianceDecision:
     reasoning: str
     requires_human_review: bool
     flagged_reason: Optional[str] = None
+    confidence_score: Optional[float] = None
 
 class AuditState(TypedDict):
     # Inputs
