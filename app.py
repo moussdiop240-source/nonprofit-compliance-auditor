@@ -19,6 +19,7 @@ from tools.formatting_tools import generate_pdf
 from agents.expense_extractor import extract_expenses
 from agents.compliance_checker import check_compliance
 from agents.report_writer import write_audit_report
+from agents.supervisor import run_audit
 from graph.hitl_handler import human_review_node
 from graph.multi_agent_graph import build_langgraph, run_graph
 from vectorstores.cfr200_store import get_store_version, reindex as cfr200_reindex
@@ -32,8 +33,10 @@ from tools.visualization_tools import (
     expense_by_category_chart,
     confidence_distribution_chart,
     allowable_vs_unallowable_bar,
+    budget_vs_actuals_chart,
     render_chart,
 )
+from tools.nlp_utils import extract_grant_budget
 from tools.excel_report_formatter import generate_excel_report
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -334,6 +337,8 @@ if run_btn and expense_file and grant_file:
         )
         st.session_state["audit_session_id"] = _session_id
 
+        _grant_budget = extract_grant_budget(grant_text)
+
         initial_state: dict = {
             "expense_report_text": expense_text,
             "grant_agreement_text": grant_text,
@@ -351,6 +356,7 @@ if run_btn and expense_file and grant_file:
             "human_review_complete": False,
             "audit_report_markdown": "",
             "report_generation_complete": False,
+            "grant_budget": _grant_budget,
             "current_agent": "expense_extractor",
             "messages": [],
             "audit_complete": False,
@@ -411,25 +417,11 @@ if run_btn and expense_file and grant_file:
                 status.success("✅ Audit complete!")
 
         else:
-            # ── Direct-call fallback ──────────────────────────────────────────
-            _update(15, "Agent 1: Extracting expense line items (NLP + Ollama)…")
-            state = extract_expenses(initial_state)
+            # ── Direct-call fallback (routed through Supervisor) ──────────────
+            _update(15, "Supervisor: orchestrating audit pipeline…")
+            state = run_audit(initial_state)
             n_items = len(state.get("extracted_line_items", []))
-            _update(35, f"Agent 1 complete — {n_items} line item(s) extracted.")
-
-            _update(40, f"Agent 2: Checking compliance for {n_items} item(s)…")
-            state = check_compliance(state)
-            _update(65, "Agent 2 complete — compliance decisions ready.")
-
-            pending = state.get("items_pending_human_review", [])
-            if pending:
-                _update(68, f"HITL: Auto-reviewing {len(pending)} flagged item(s)…")
-                state = human_review_node(state)
-                _update(72, "Human review step complete.")
-
-            _update(75, "Agent 3: Generating audit report…")
-            state = write_audit_report(state)
-            _update(90, "Report generated — rendering PDF…")
+            _update(90, f"Supervisor complete — {n_items} item(s) audited. Rendering PDF…")
 
             pdf_bytes = generate_pdf(state.get("audit_report_markdown", ""))
             _em_complete(
@@ -682,6 +674,18 @@ if result:
             confidence_distribution_chart(_decisions),
             "Confidence chart requires plotly — pip install plotly",
         )
+        _grant_budget_result = result.get("grant_budget", {})
+        if _grant_budget_result:
+            render_chart(
+                budget_vs_actuals_chart(_decisions, _grant_budget_result),
+                "Budget vs actuals chart requires plotly — pip install plotly",
+            )
+        else:
+            st.info(
+                "No budget categories were detected in the grant agreement. "
+                "The budget vs actuals chart will appear once a grant with "
+                "explicit budget line items is uploaded."
+            )
 
     with tab_log:
         messages = result.get("messages", [])
@@ -696,12 +700,30 @@ if result:
         with _tabs[5]:
             st.subheader("Audit Session Log")
             st.caption("SHA-256 hashes only — no raw document text is stored.")
+
+            # Filter controls
+            _fc1, _fc2, _fc3, _fc4 = st.columns([2, 1, 1, 1])
+            _log_search = _fc1.text_input(
+                "Search org / grant", placeholder="e.g. Community Impact", key="log_search"
+            )
+            _log_status = _fc2.selectbox(
+                "Status", ["(all)", "complete", "started"], key="log_status"
+            )
+            _log_from = _fc3.date_input("From date", value=None, key="log_from")
+            _log_to   = _fc4.date_input("To date",   value=None, key="log_to")
+
             try:
                 import pandas as pd
-                sessions = _em_list(limit=200)
+                sessions = _em_list(
+                    limit=200,
+                    search=_log_search or None,
+                    status_filter=None if _log_status == "(all)" else _log_status,
+                    date_from=str(_log_from) if _log_from else None,
+                    date_to=str(_log_to)   if _log_to   else None,
+                )
                 if sessions:
                     st.dataframe(pd.DataFrame(sessions), use_container_width=True, hide_index=True)
                 else:
-                    st.info("No audit sessions recorded yet.")
+                    st.info("No audit sessions match the current filters.")
             except Exception as _e:
                 st.warning(f"Could not load audit log: {_e}")

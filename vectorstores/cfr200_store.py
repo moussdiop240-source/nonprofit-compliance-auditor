@@ -33,8 +33,14 @@ def load_cfr200_store(persist_dir: str = PERSIST_DIR) -> Optional[Any]:
     global _store_instance, _store_version
 
     try:
-        from langchain_community.vectorstores import Chroma
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+        except ImportError:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_chroma import Chroma
+        except ImportError:
+            from langchain_community.vectorstores import Chroma
     except ImportError:
         logger.warning("langchain_community not available — using stub store")
         _store_version = "stub-" + datetime.now().strftime("%Y%m%d")
@@ -93,8 +99,14 @@ def reindex(
         logger.info("Removed stale index at %s", persist_dir)
 
     try:
-        from langchain_community.vectorstores import Chroma
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+        except ImportError:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_chroma import Chroma
+        except ImportError:
+            from langchain_community.vectorstores import Chroma
     except ImportError:
         logger.warning("Cannot reindex: langchain_community not available")
         return None

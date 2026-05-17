@@ -192,7 +192,8 @@ class TestComplianceChecker:
             assert "confidence_score" in d, f"Missing confidence_score in {d}"
 
     def test_low_confidence_forces_review(self):
-        result = self._run(COMPLIANCE_RESPONSE, monkeypatch_confidence=0.3)
+        # Threshold is 0.15 (env-configurable); use a score clearly below it
+        result = self._run(COMPLIANCE_RESPONSE, monkeypatch_confidence=0.05)
         for d in result["compliance_decisions"]:
             assert d["status"] == "REQUIRES_REVIEW"
 

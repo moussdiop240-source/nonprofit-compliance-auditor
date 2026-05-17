@@ -49,6 +49,8 @@ class AuditState(TypedDict):
     # Agent 3 outputs
     audit_report_markdown: str
     report_generation_complete: bool
+    # Budget tracking
+    grant_budget: dict          # {category: budgeted_amount} extracted from grant
     # Supervisor control
     current_agent: str
     messages: List[dict]

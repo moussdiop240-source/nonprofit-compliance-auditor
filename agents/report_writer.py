@@ -36,14 +36,34 @@ def write_audit_report(state: dict) -> dict:
     conditional = [d for d in decisions if d["status"] == "CONDITIONALLY_ALLOWABLE"]
     needs_review = [d for d in decisions if d["status"] == "REQUIRES_REVIEW"]
 
+    # Build budget vs actuals block if budget data is available
+    grant_budget = state.get("grant_budget", {})
+    if grant_budget:
+        actuals: dict = {}
+        for d in decisions:
+            cat = (d.get("category") or "other").lower()
+            actuals[cat] = actuals.get(cat, 0.0) + float(d.get("amount", 0))
+        budget_lines = []
+        for cat, budgeted in sorted(grant_budget.items()):
+            actual = actuals.get(cat, 0.0)
+            variance = actual - budgeted
+            flag = " ⚠ OVER BUDGET" if variance > 0 else ""
+            budget_lines.append(
+                f"  {cat.title()}: budgeted=${budgeted:,.2f} | actual=${actual:,.2f} | variance=${variance:+,.2f}{flag}"
+            )
+        budget_section = "BUDGET VS ACTUALS:\n" + "\n".join(budget_lines)
+    else:
+        budget_section = "BUDGET VS ACTUALS: No budget data provided."
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are a nonprofit audit report writer specializing in 2 CFR 200 federal grant compliance. "
             "Generate a professional markdown audit report with: "
             "(1) executive summary, "
             "(2) a detailed findings table listing every line item with its status, regulation cited, and reasoning, "
-            "(3) a section on flagged/unallowable items with specific remediation steps, "
-            "(4) actionable recommendations. "
+            "(3) a budget vs actuals section comparing category spend to grant budget, "
+            "(4) a section on flagged/unallowable items with specific remediation steps, "
+            "(5) actionable recommendations. "
             "Use the exact line item data provided — do not invent or generalize."
         )),
         ("human", """
@@ -61,6 +81,8 @@ DETAILED LINE ITEM DECISIONS:
 (Format: #No | Description | Amount | Category | [Status] | Reg: Citation | Reasoning | ML Confidence)
 {decisions_detail}
 
+{budget_section}
+
 Generate the full audit report in markdown:
 """)
     ])
@@ -76,6 +98,7 @@ Generate the full audit report in markdown:
         "num_conditional": len(conditional),
         "num_review": len(needs_review),
         "decisions_detail": _format_decisions(decisions),
+        "budget_section": budget_section,
     })
 
     new_message = {

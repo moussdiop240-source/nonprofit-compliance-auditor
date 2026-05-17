@@ -30,8 +30,14 @@ def create_grant_store(grant_text: str, store_id: Optional[str] = None) -> Dict:
         return _grant_stores[sid]
 
     try:
-        from langchain_community.vectorstores import Chroma
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+        except ImportError:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_chroma import Chroma
+        except ImportError:
+            from langchain_community.vectorstores import Chroma
         from langchain_core.documents import Document
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
