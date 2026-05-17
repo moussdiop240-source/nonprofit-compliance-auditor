@@ -100,6 +100,43 @@ def preprocess_expense_text(text: str) -> Dict:
     }
 
 
+def extract_grant_budget(grant_text: str) -> Dict[str, float]:
+    """
+    Parse the grant agreement text for budget amounts per category.
+    Looks for patterns like "Personnel: $3,800" or "Travel up to $2,000".
+    Returns a dict {category: amount}; empty dict if nothing found.
+    """
+    budget: Dict[str, float] = {}
+    category_map = {
+        "personnel":    r'\b(personnel|salary|salaries|fringe|payroll)\b',
+        "travel":       r'\b(travel|airfare|lodging|per diem|mileage)\b',
+        "supplies":     r'\b(supplies|materials|printing|software|computing)\b',
+        "equipment":    r'\b(equipment|hardware|computer|laptop)\b',
+        "indirect":     r'\b(indirect|overhead|administrative)\b',
+        "professional": r'\b(conference|training|registration|membership)\b',
+        "food":         r'\b(meal|food|catering|lunch|dinner)\b',
+    }
+    # Match lines that contain a category keyword AND a dollar amount
+    line_pattern = re.compile(
+        r'(?P<line>[^\n]*(?:' +
+        '|'.join(f'(?P<cat_{k}>{v})' for k, v in category_map.items()) +
+        r')[^\n]*\$\s*(?P<amount>\d[\d,]*(?:\.\d{2})?))',
+        re.IGNORECASE,
+    )
+    for m in line_pattern.finditer(grant_text):
+        try:
+            amount = float(m.group("amount").replace(",", ""))
+        except (ValueError, TypeError):
+            continue
+        line = m.group("line").lower()
+        for cat, pattern in category_map.items():
+            if re.search(pattern, line, re.IGNORECASE):
+                if cat not in budget or amount > budget[cat]:
+                    budget[cat] = amount
+                break
+    return budget
+
+
 def build_nlp_hint_block(preprocessed: Dict) -> str:
     """
     Builds a text block summarising NLP findings to prepend to the LLM prompt.

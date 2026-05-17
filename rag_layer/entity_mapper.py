@@ -92,15 +92,40 @@ def complete_session(
     )
 
 
-def list_sessions(limit: int = 100) -> list:
-    """Return recent audit sessions for the admin audit-log view."""
-    with _conn() as con:
-        rows = con.execute(
-            """SELECT session_id, organization, grant_number, item_count,
+def list_sessions(
+    limit: int = 100,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list:
+    """
+    Return recent audit sessions for the admin audit-log view.
+    Supports optional filtering by org/grant keyword, status, and date range.
+    """
+    query = """SELECT session_id, organization, grant_number, item_count,
                       allowable, unallowable, status, created_at, completed_at
-               FROM audit_sessions ORDER BY created_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
+               FROM audit_sessions WHERE 1=1"""
+    params: list = []
+
+    if search:
+        query += " AND (organization LIKE ? OR grant_number LIKE ?)"
+        params += [f"%{search}%", f"%{search}%"]
+    if status_filter:
+        query += " AND status = ?"
+        params.append(status_filter)
+    if date_from:
+        query += " AND created_at >= ?"
+        params.append(date_from)
+    if date_to:
+        query += " AND created_at <= ?"
+        params.append(date_to + "T23:59:59")
+
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with _conn() as con:
+        rows = con.execute(query, params).fetchall()
     return [
         {
             "session_id":   r[0][:8] + "…",

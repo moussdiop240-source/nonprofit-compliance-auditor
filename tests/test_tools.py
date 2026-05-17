@@ -22,6 +22,7 @@ from tools.nlp_utils import (
     detect_category,
     preprocess_expense_text,
     build_nlp_hint_block,
+    extract_grant_budget,
 )
 
 
@@ -112,6 +113,48 @@ class TestBuildNlpHintBlock:
     def test_contains_amounts(self):
         block = build_nlp_hint_block({"amounts": [99.99], "dates": [], "vendor_candidates": [], "line_count": 1})
         assert "$99.99" in block
+
+
+class TestExtractGrantBudget:
+    def test_detects_personnel_budget(self):
+        text = "Personnel salaries: $45,000 for the project period."
+        budget = extract_grant_budget(text)
+        assert "personnel" in budget
+        assert budget["personnel"] == 45000.0
+
+    def test_detects_travel_budget(self):
+        text = "Travel and per diem expenses not to exceed $5,000."
+        budget = extract_grant_budget(text)
+        assert "travel" in budget
+        assert budget["travel"] == 5000.0
+
+    def test_detects_multiple_categories(self):
+        text = (
+            "Personnel salary: $30,000\n"
+            "Travel airfare: $3,500\n"
+            "Supplies and materials: $1,200\n"
+        )
+        budget = extract_grant_budget(text)
+        assert "personnel" in budget
+        assert "travel" in budget
+        assert "supplies" in budget
+
+    def test_empty_text_returns_empty_dict(self):
+        assert extract_grant_budget("") == {}
+
+    def test_no_dollar_amounts_returns_empty_dict(self):
+        text = "This grant covers personnel and travel activities."
+        budget = extract_grant_budget(text)
+        # No dollar amounts — should return empty
+        assert budget == {}
+
+    def test_keeps_largest_amount_per_category(self):
+        text = (
+            "Personnel: $10,000\n"
+            "Personnel salaries: $50,000\n"
+        )
+        budget = extract_grant_budget(text)
+        assert budget.get("personnel") == 50000.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

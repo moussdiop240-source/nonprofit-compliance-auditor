@@ -173,6 +173,53 @@ def allowable_vs_unallowable_bar(
         return None
 
 
+def budget_vs_actuals_chart(
+    line_items: list,
+    grant_budget: dict,
+) -> Optional[Any]:
+    """
+    Grouped bar chart comparing budgeted vs actual spend per category.
+    Only renders categories present in grant_budget.
+    Returns a plotly Figure or None.
+    """
+    if not grant_budget or not line_items:
+        return None
+
+    actuals: dict[str, float] = {}
+    for item in line_items:
+        cat = (item.get("category") or "unknown").lower()
+        actuals[cat] = actuals.get(cat, 0.0) + float(item.get("amount", 0))
+
+    categories = sorted(grant_budget.keys())
+    if not categories:
+        return None
+
+    budgeted = [grant_budget.get(c, 0) for c in categories]
+    actual   = [actuals.get(c, 0) for c in categories]
+
+    try:
+        import plotly.graph_objects as go
+
+        fig = go.Figure([
+            go.Bar(name="Budgeted", x=categories, y=budgeted,
+                   marker_color="#3b82f6",
+                   text=[f"${v:,.2f}" for v in budgeted], textposition="outside"),
+            go.Bar(name="Actual",   x=categories, y=actual,
+                   marker_color="#22c55e",
+                   text=[f"${v:,.2f}" for v in actual], textposition="outside"),
+        ])
+        fig.update_layout(
+            barmode="group",
+            title="Grant Budget vs Actual Spend by Category",
+            yaxis_title="Amount ($)",
+            margin=dict(t=50, b=40, l=70, r=20),
+            height=360,
+        )
+        return fig
+    except ImportError:
+        return None
+
+
 # ── Streamlit rendering helper ────────────────────────────────────────────────
 
 def render_chart(fig: Optional[Any], fallback_message: str = "Chart unavailable (plotly not installed)") -> None:

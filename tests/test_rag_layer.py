@@ -51,6 +51,61 @@ class TestEntityMapper:
         monkeypatch.setattr(entity_mapper, "DB_PATH", tmp_path / "audit_log.db")
         assert entity_mapper.list_sessions() == []
 
+    def test_list_sessions_filter_by_search(self, tmp_path, monkeypatch):
+        from rag_layer import entity_mapper
+        monkeypatch.setattr(entity_mapper, "DB_PATH", tmp_path / "audit_log.db")
+
+        entity_mapper.create_session("Alpha Org", "G-100", "exp", "grant")
+        entity_mapper.create_session("Beta Org", "G-200", "exp", "grant")
+
+        hits = entity_mapper.list_sessions(search="Alpha")
+        assert len(hits) == 1
+        assert hits[0]["organization"] == "Alpha Org"
+
+        no_hits = entity_mapper.list_sessions(search="ZZZ")
+        assert no_hits == []
+
+    def test_list_sessions_filter_by_status(self, tmp_path, monkeypatch):
+        from rag_layer import entity_mapper
+        monkeypatch.setattr(entity_mapper, "DB_PATH", tmp_path / "audit_log.db")
+
+        sid = entity_mapper.create_session("Org", "G-1", "exp", "grant")
+        entity_mapper.create_session("Org", "G-2", "exp", "grant")
+        entity_mapper.complete_session(sid, item_count=3, allowable=500.0, unallowable=0.0)
+
+        complete_sessions = entity_mapper.list_sessions(status_filter="complete")
+        assert len(complete_sessions) == 1
+        assert complete_sessions[0]["status"] == "complete"
+
+        started_sessions = entity_mapper.list_sessions(status_filter="started")
+        assert len(started_sessions) == 1
+        assert started_sessions[0]["status"] == "started"
+
+    def test_list_sessions_filter_by_date(self, tmp_path, monkeypatch):
+        from rag_layer import entity_mapper
+        import sqlite3
+        monkeypatch.setattr(entity_mapper, "DB_PATH", tmp_path / "audit_log.db")
+
+        # Create session then manually backdate one record
+        sid1 = entity_mapper.create_session("Old Org", "G-OLD", "exp", "grant")
+        sid2 = entity_mapper.create_session("New Org", "G-NEW", "exp", "grant")
+
+        con = sqlite3.connect(str(tmp_path / "audit_log.db"))
+        con.execute("UPDATE audit_sessions SET created_at=? WHERE session_id=?",
+                    ("2020-06-01T00:00:00", sid1))
+        con.commit()
+        con.close()
+
+        recent = entity_mapper.list_sessions(date_from="2024-01-01")
+        orgs = [r["organization"] for r in recent]
+        assert "New Org" in orgs
+        assert "Old Org" not in orgs
+
+        old_only = entity_mapper.list_sessions(date_to="2021-12-31")
+        orgs2 = [r["organization"] for r in old_only]
+        assert "Old Org" in orgs2
+        assert "New Org" not in orgs2
+
 
 # ─── pseudonymizer ────────────────────────────────────────────────────────────
 

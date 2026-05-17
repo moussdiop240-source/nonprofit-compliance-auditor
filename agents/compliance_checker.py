@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -7,8 +8,10 @@ from tools.rag_tools import query_cfr200_store, query_grant_store
 
 logger = logging.getLogger(__name__)
 
-# Enhancement 2 — TF-IDF confidence threshold
-_CONFIDENCE_THRESHOLD = 0.7
+# TF-IDF threshold — configurable via env var; 0.15 is appropriate for
+# short expense descriptions vs long regulatory text (previously 0.70 caused
+# all items to be flagged regardless of LLM decision).
+_CONFIDENCE_THRESHOLD = float(os.environ.get("TFIDF_CONFIDENCE_THRESHOLD", "0.15"))
 
 
 def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
