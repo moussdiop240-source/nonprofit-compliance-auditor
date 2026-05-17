@@ -120,9 +120,11 @@ def confidence_distribution_chart(decisions: list) -> Optional[Any]:
             opacity=0.85,
             hovertemplate="Confidence %{x:.2f}: %{y} items<extra></extra>",
         ))
+        import os as _os
+        _threshold = float(_os.environ.get("TFIDF_CONFIDENCE_THRESHOLD", "0.15"))
         fig.add_vline(
-            x=0.7, line_dash="dash", line_color="#ef4444",
-            annotation_text="Review threshold (0.70)",
+            x=_threshold, line_dash="dash", line_color="#ef4444",
+            annotation_text=f"Review threshold ({_threshold:.2f})",
             annotation_position="top right",
         )
         fig.update_layout(
