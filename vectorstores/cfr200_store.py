@@ -193,7 +193,6 @@ def reindex_from_ecfr(persist_dir: str = PERSIST_DIR) -> Optional[Any]:
     Returns the store instance, or None on failure.
     """
     global _store_instance, _store_version
-    import hashlib
     from tools.regulatory_fetcher import get_latest_version_date, fetch_cfr200_sections
 
     version_date = get_latest_version_date()
