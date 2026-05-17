@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 from langchain_ollama import ChatOllama
@@ -7,15 +6,11 @@ from langchain_core.output_parsers import StrOutputParser
 from tools.rag_tools import query_cfr200_store, query_grant_store
 from tools.ml_cross_checker import prescreen_unallowable, detect_amount_anomalies, cross_check_budget
 from tools.nlp_utils import extract_grant_budget
+from agents.hallucination_guard import invoke_with_guard
 
 logger = logging.getLogger(__name__)
 
-# TF-IDF threshold — configurable via env var; 0.15 is appropriate for
-# short expense descriptions vs long regulatory text (previously 0.70 caused
-# all items to be flagged regardless of LLM decision).
 _CONFIDENCE_THRESHOLD = float(os.environ.get("TFIDF_CONFIDENCE_THRESHOLD", "0.15"))
-_VALID_STATUSES = frozenset({"ALLOWABLE", "UNALLOWABLE", "CONDITIONALLY_ALLOWABLE", "REQUIRES_REVIEW"})
-_DECISION_KEYS = frozenset({"status", "regulation_cited", "reasoning", "requires_human_review", "flagged_reason"})
 
 _llm = None
 
@@ -25,23 +20,6 @@ def _get_llm():
     if _llm is None:
         _llm = ChatOllama(model="llama3.2", temperature=0)
     return _llm
-
-
-def _sanitize_decision(raw: dict) -> dict:
-    """Guard against LLM hallucinations: strip unknown keys, validate status, fill defaults."""
-    clean = {k: v for k, v in raw.items() if k in _DECISION_KEYS}
-    status = clean.get("status", "")
-    if status not in _VALID_STATUSES:
-        clean["status"] = "REQUIRES_REVIEW"
-        clean["requires_human_review"] = True
-        clean["flagged_reason"] = f"Invalid status '{status}' returned by LLM — manual review required"
-    if not clean.get("regulation_cited"):
-        clean["regulation_cited"] = "2 CFR 200 — see manual review"
-    clean.setdefault("reasoning", "No reasoning provided — manual review required")
-    clean.setdefault("requires_human_review", False)
-    if "flagged_reason" not in clean:
-        clean["flagged_reason"] = None
-    return clean
 
 
 def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
@@ -68,19 +46,28 @@ For each expense line item, you will:
 2. Check the grant agreement for specific restrictions
 3. Make a compliance determination
 
-Your determination must be one of:
+Your determination must be one of these exact strings (uppercase, no variations):
 - ALLOWABLE: Expense is clearly permitted
 - UNALLOWABLE: Expense violates 2 CFR 200 or grant terms (cite specific section)
 - CONDITIONALLY_ALLOWABLE: Allowable with conditions (specify conditions)
 - REQUIRES_REVIEW: Complex case needing human expert judgment
 
-Return JSON:
+STRICT OUTPUT RULES:
+- Return ONLY a single JSON object — no markdown, no code fences, no prose before or after
+- The JSON must contain EXACTLY these five fields and no others:
+  "status"               — one of the four strings above, exact case, no other values
+  "regulation_cited"     — string, e.g. "2 CFR 200.474"
+  "reasoning"            — string, 1-3 sentences
+  "requires_human_review" — boolean true or false (not a string)
+  "flagged_reason"       — string if requires_human_review is true, otherwise null
+
+Example of valid output:
 {{
-  "status": "ALLOWABLE|UNALLOWABLE|CONDITIONALLY_ALLOWABLE|REQUIRES_REVIEW",
-  "regulation_cited": "2 CFR 200.XXX or Grant Section X.X",
-  "reasoning": "Brief explanation",
-  "requires_human_review": true/false,
-  "flagged_reason": "Only if requires_human_review is true"
+  "status": "ALLOWABLE",
+  "regulation_cited": "2 CFR 200.474",
+  "reasoning": "Travel cost is directly related to grant performance and within per-diem limits.",
+  "requires_human_review": false,
+  "flagged_reason": null
 }}"""
 
 def check_compliance(state: dict) -> dict:
@@ -150,31 +137,19 @@ Compliance determination (JSON only):
 """)
             ])
             chain = prompt | _get_llm() | StrOutputParser()
-            result = chain.invoke({
-                "description": item["description"],
-                "amount": item["amount"],
-                "category": item["category"],
-                "vendor": item.get("vendor", "N/A"),
-                "anomaly": "YES — statistically unusual amount" if item.get("amount_anomaly") else "NO",
-                "cfr_context": cfr_context,
-                "grant_context": grant_context,
-            })
-
-            try:
-                content = result.strip()
-                if "```" in content:
-                    content = content.split("```")[1]
-                    if content.startswith("json"):
-                        content = content[4:]
-                decision = _sanitize_decision(json.loads(content))
-            except Exception:
-                decision = {
-                    "status": "REQUIRES_REVIEW",
-                    "regulation_cited": "Unable to parse",
-                    "reasoning": "Parsing error — manual review required",
-                    "requires_human_review": True,
-                    "flagged_reason": "System parsing error",
-                }
+            decision = invoke_with_guard(
+                chain,
+                {
+                    "description": item["description"],
+                    "amount": item["amount"],
+                    "category": item["category"],
+                    "vendor": item.get("vendor", "N/A"),
+                    "anomaly": "YES — statistically unusual amount" if item.get("amount_anomaly") else "NO",
+                    "cfr_context": cfr_context,
+                    "grant_context": grant_context,
+                },
+                item_description=item["description"],
+            )
             decision["prescreened"] = False
 
         # Enhancement 2 — ML confidence scoring via TF-IDF cosine similarity
