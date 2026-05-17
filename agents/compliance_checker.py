@@ -32,7 +32,7 @@ def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
         logger.warning("TF-IDF confidence computation failed: %s", e)
         return 1.0  # Assume high confidence on error so LLM decision stands
 
-llm = ChatOllama(model="llama3:8b", temperature=0)
+llm = ChatOllama(model="llama3.2", temperature=0)
 
 COMPLIANCE_SYSTEM_PROMPT = """You are a federal grant compliance expert with 20+ years experience in 2 CFR 200 (Uniform Guidance) and nonprofit financial management.
 For each expense line item, you will:

@@ -71,7 +71,7 @@ if not require_auth(st.session_state):
 st.title("📋 Nonprofit Federal Grant Compliance Auditor")
 st.markdown(
     "Automatically audit every expense line item against **2 CFR 200 (Uniform Guidance)** "
-    "and your grant agreement. Powered by **LangChain + Ollama (llama3:8b)** — 100% local."
+    "and your grant agreement. Powered by **LangChain + Ollama (llama3.2)** — 100% local."
 )
 st.divider()
 

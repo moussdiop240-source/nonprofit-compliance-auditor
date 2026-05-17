@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from datetime import datetime
 
-llm = ChatOllama(model="llama3:8b", temperature=0.1)
+llm = ChatOllama(model="llama3.2", temperature=0.1)
 
 _MAX_DECISIONS_IN_PROMPT = 60
 
