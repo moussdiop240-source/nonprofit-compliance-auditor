@@ -124,6 +124,46 @@ class TestExpenseExtractor:
         result = self._run(wrapped)
         assert result["extraction_complete"] is True
 
+    def test_report_format_in_state(self):
+        result = self._run(self._VALID_JSON)
+        assert "report_format" in result
+        assert result["report_format"] in ("tabular", "list", "prose")
+
+    def test_extraction_method_in_state(self):
+        result = self._run(self._VALID_JSON)
+        assert "extraction_method" in result
+        assert result["extraction_method"] in ("llm", "tabular_direct")
+
+    def test_tabular_direct_skips_llm(self):
+        """When tabular parse succeeds, the LLM chain should not be invoked."""
+        tabular_text = (
+            "Description\tAmount\tDate\n"
+            "Flight to DC\t$450.00\t2024-03-15\n"
+            "Hotel stay\t$300.00\t2024-03-16\n"
+        )
+        tabular_state = {**BASE_STATE, "expense_report_text": tabular_text}
+
+        with patch("agents.expense_extractor.ChatOllama") as mock_llm, \
+             patch("agents.expense_extractor.ChatPromptTemplate") as mock_pt:
+            from agents.expense_extractor import extract_expenses
+            result = extract_expenses(dict(tabular_state))
+
+        # LLM should not have been called for tabular data
+        mock_llm.assert_not_called()
+        assert result["extraction_method"] == "tabular_direct"
+        assert len(result["extracted_line_items"]) == 2
+
+    def test_enrich_fills_missing_category(self):
+        """Items with blank category should be enriched by NLP post-processing."""
+        items_no_cat = [
+            {"line_number": 1, "description": "Flight to conference",
+             "amount": 450.0, "category": "", "vendor": "", "date": "2024-03-15"},
+        ]
+        import json as _json
+        result = self._run(_json.dumps(items_no_cat))
+        item = result["extracted_line_items"][0]
+        assert item["category"] == "travel"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Agent 2 — compliance_checker

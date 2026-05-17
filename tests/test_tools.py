@@ -23,6 +23,10 @@ from tools.nlp_utils import (
     preprocess_expense_text,
     build_nlp_hint_block,
     extract_grant_budget,
+    detect_report_format,
+    parse_tabular_expenses,
+    enrich_line_items,
+    flag_duplicate_items,
 )
 
 
@@ -155,6 +159,152 @@ class TestExtractGrantBudget:
         )
         budget = extract_grant_budget(text)
         assert budget.get("personnel") == 50000.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Enhancement 1 NLP additions
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDetectReportFormat:
+    def test_tabular_tab_separated(self):
+        text = "Description\tAmount\tDate\nFlight\t$450.00\t2024-03-15\nHotel\t$300.00\t2024-03-16"
+        assert detect_report_format(text) == "tabular"
+
+    def test_tabular_pipe_separated(self):
+        text = "| Description | Amount |\n| Flight | $450 |\n| Hotel | $300 |"
+        assert detect_report_format(text) == "tabular"
+
+    def test_list_numbered(self):
+        text = "1. Flight to NYC $450.00\n2. Hotel stay $300.00\n3. Meals $75.00"
+        assert detect_report_format(text) == "list"
+
+    def test_list_bulleted(self):
+        text = "- Flight $450.00\n- Hotel $300.00\n- Supplies $75.00"
+        assert detect_report_format(text) == "list"
+
+    def test_prose(self):
+        text = (
+            "The organization incurred travel expenses during the grant period. "
+            "A flight costing $450 was taken to attend the annual conference. "
+            "Hotel accommodations totaled $300 for two nights."
+        )
+        assert detect_report_format(text) == "prose"
+
+    def test_empty_text_returns_prose(self):
+        assert detect_report_format("") == "prose"
+
+
+class TestParseTabularExpenses:
+    _TAB_TEXT = (
+        "Description\tAmount\tDate\tVendor\n"
+        "Flight to conference\t$450.00\t2024-03-15\tDelta\n"
+        "Hotel stay\t$300.00\t2024-03-16\tMarriott\n"
+    )
+    _PIPE_TEXT = (
+        "| Description | Amount | Date |\n"
+        "| Flight | $450.00 | 2024-03-15 |\n"
+        "| Hotel | $300.00 | 2024-03-16 |\n"
+    )
+
+    def test_tab_separated_returns_items(self):
+        items = parse_tabular_expenses(self._TAB_TEXT)
+        assert len(items) == 2
+
+    def test_pipe_separated_returns_items(self):
+        items = parse_tabular_expenses(self._PIPE_TEXT)
+        assert len(items) == 2
+
+    def test_amounts_extracted(self):
+        items = parse_tabular_expenses(self._TAB_TEXT)
+        amounts = {i["amount"] for i in items}
+        assert 450.0 in amounts
+        assert 300.0 in amounts
+
+    def test_dates_extracted(self):
+        items = parse_tabular_expenses(self._TAB_TEXT)
+        dates = {i["date"] for i in items}
+        assert "2024-03-15" in dates
+
+    def test_category_detected(self):
+        items = parse_tabular_expenses(self._TAB_TEXT)
+        assert items[0]["category"] == "travel"
+
+    def test_no_amounts_returns_empty(self):
+        items = parse_tabular_expenses("Description\tDate\nFlight\t2024-03-15")
+        assert items == []
+
+    def test_line_numbers_sequential(self):
+        items = parse_tabular_expenses(self._TAB_TEXT)
+        assert [i["line_number"] for i in items] == [1, 2]
+
+
+class TestEnrichLineItems:
+    def test_fills_missing_category(self):
+        items = [{"description": "Flight to NYC", "amount": 450.0, "category": "", "vendor": ""}]
+        enriched = enrich_line_items(items)
+        assert enriched[0]["category"] == "travel"
+
+    def test_normalizes_string_amount(self):
+        items = [{"description": "Supplies", "amount": "$75.50", "category": "supplies", "vendor": ""}]
+        enriched = enrich_line_items(items)
+        assert enriched[0]["amount"] == 75.50
+
+    def test_none_amount_becomes_zero(self):
+        items = [{"description": "Misc", "amount": None, "category": "other", "vendor": ""}]
+        enriched = enrich_line_items(items)
+        assert enriched[0]["amount"] == 0.0
+
+    def test_cleans_vendor_name(self):
+        items = [{"description": "Supplies", "amount": 50.0, "category": "supplies", "vendor": "Acme Inc."}]
+        enriched = enrich_line_items(items)
+        assert "Inc" not in enriched[0]["vendor"]
+
+    def test_does_not_overwrite_valid_category(self):
+        items = [{"description": "Flight", "amount": 450.0, "category": "equipment", "vendor": ""}]
+        enriched = enrich_line_items(items)
+        assert enriched[0]["category"] == "equipment"
+
+    def test_returns_same_list_length(self):
+        items = [
+            {"description": "A", "amount": 100.0, "category": "", "vendor": ""},
+            {"description": "B", "amount": 200.0, "category": "travel", "vendor": ""},
+        ]
+        assert len(enrich_line_items(items)) == 2
+
+
+class TestFlagDuplicateItems:
+    def test_identical_descriptions_same_amount_flagged(self):
+        items = [
+            {"description": "Flight to conference", "amount": 450.0},
+            {"description": "Flight to conference", "amount": 450.0},
+        ]
+        result = flag_duplicate_items(items)
+        assert any(i.get("possible_duplicate") for i in result)
+
+    def test_distinct_items_not_flagged(self):
+        items = [
+            {"description": "Flight to conference", "amount": 450.0},
+            {"description": "Office supplies purchase", "amount": 75.0},
+            {"description": "Hotel accommodation", "amount": 300.0},
+        ]
+        result = flag_duplicate_items(items)
+        assert not any(i.get("possible_duplicate") for i in result)
+
+    def test_single_item_unchanged(self):
+        items = [{"description": "Flight", "amount": 450.0}]
+        assert flag_duplicate_items(items) == items
+
+    def test_similar_descriptions_different_amounts_not_flagged(self):
+        items = [
+            {"description": "Hotel stay first night", "amount": 150.0},
+            {"description": "Hotel stay second night", "amount": 300.0},
+        ]
+        result = flag_duplicate_items(items)
+        # Amounts differ by 100% — should not be flagged
+        assert not all(i.get("possible_duplicate") for i in result)
+
+    def test_empty_list_returns_empty(self):
+        assert flag_duplicate_items([]) == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════

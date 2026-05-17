@@ -137,6 +137,157 @@ def extract_grant_budget(grant_text: str) -> Dict[str, float]:
     return budget
 
 
+def detect_report_format(text: str) -> str:
+    """
+    Detect the structural format of an expense report.
+    Returns 'tabular', 'list', or 'prose'.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "prose"
+
+    tab_lines = sum(
+        1 for ln in lines
+        if "\t" in ln or "|" in ln or re.search(r" {3,}", ln)
+    )
+    if tab_lines / len(lines) > 0.4:
+        return "tabular"
+
+    list_lines = sum(
+        1 for ln in lines
+        if re.match(r"^\s*[-•*#]|\s*\d+[.)]\s", ln)
+    )
+    if list_lines / len(lines) > 0.3:
+        return "list"
+
+    return "prose"
+
+
+def parse_tabular_expenses(text: str) -> List[Dict]:
+    """
+    Directly extract line items from a tabular expense report without using the LLM.
+    Handles tab-separated, pipe-separated, and multi-space-aligned tables.
+    Returns an empty list when the table structure is too ambiguous to parse reliably.
+    """
+    items = []
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+
+    # Identify the delimiter
+    tab_count = sum(1 for ln in lines if "\t" in ln)
+    pipe_count = sum(1 for ln in lines if "|" in ln)
+
+    if tab_count >= pipe_count and tab_count > 0:
+        splitter = lambda ln: [c.strip() for c in ln.split("\t")]  # noqa: E731
+    elif pipe_count > 0:
+        splitter = lambda ln: [c.strip() for c in ln.strip().strip("|").split("|")]  # noqa: E731
+    else:
+        # Multi-space delimiter
+        splitter = lambda ln: [c.strip() for c in re.split(r" {2,}", ln.strip())]  # noqa: E731
+
+    line_num = 0
+    for ln in lines:
+        # Strip dates before amount detection so years aren't mistaken for amounts
+        ln_no_dates = ln
+        for pat in _DATE_PATTERNS:
+            ln_no_dates = pat.sub("", ln_no_dates)
+
+        amounts = extract_amounts(ln_no_dates)
+        if not amounts:
+            continue  # header or empty row
+
+        line_num += 1
+        cells = splitter(ln)
+
+        # Strip amounts and dates from cells to isolate the description
+        desc_parts = []
+        for cell in cells:
+            cleaned = _AMOUNT_PATTERN.sub("", cell)
+            for pat in _DATE_PATTERNS:
+                cleaned = pat.sub("", cleaned)
+            cleaned = cleaned.strip().strip("|").strip()
+            if cleaned:
+                desc_parts.append(cleaned)
+
+        description = " ".join(desc_parts) if desc_parts else ln.strip()
+        dates = extract_dates(ln)
+        category = detect_category(description) or "other"
+
+        items.append({
+            "line_number": line_num,
+            "description": description,
+            "amount": max(amounts),
+            "category": category,
+            "vendor": "",
+            "date": dates[0] if dates else "",
+        })
+
+    return items
+
+
+def enrich_line_items(items: List[Dict]) -> List[Dict]:
+    """
+    Post-LLM enrichment pass applied to all extracted line items:
+    - Fill missing or unknown categories via heuristic detection
+    - Normalize amount values (string → float)
+    - Clean vendor names
+    """
+    for item in items:
+        # Normalize amount
+        amt = item.get("amount")
+        if isinstance(amt, str):
+            parsed = extract_amounts(amt)
+            item["amount"] = parsed[0] if parsed else 0.0
+        elif amt is None:
+            item["amount"] = 0.0
+
+        # Fill missing category
+        cat = item.get("category", "")
+        if not cat or cat.lower() in ("", "other", "unknown", "n/a"):
+            detected = detect_category(item.get("description", ""))
+            if detected:
+                item["category"] = detected
+
+        # Clean vendor
+        if item.get("vendor"):
+            item["vendor"] = clean_vendor_name(item["vendor"])
+
+    return items
+
+
+def flag_duplicate_items(items: List[Dict]) -> List[Dict]:
+    """
+    Use TF-IDF cosine similarity to annotate potential duplicate line items.
+    Items with description similarity > 0.85 AND amount within 5% are marked
+    with 'possible_duplicate': True.
+    """
+    if len(items) < 2:
+        return items
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        descriptions = [str(item.get("description", "")) for item in items]
+        vec = TfidfVectorizer(stop_words="english", min_df=1)
+        matrix = vec.fit_transform(descriptions)
+        sim = cosine_similarity(matrix)
+
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                if sim[i, j] < 0.85:
+                    continue
+                amt_i = float(items[i].get("amount") or 0)
+                amt_j = float(items[j].get("amount") or 0)
+                denom = max(amt_i, amt_j, 1)
+                if abs(amt_i - amt_j) / denom < 0.05:
+                    items[i]["possible_duplicate"] = True
+                    items[j]["possible_duplicate"] = True
+    except Exception:
+        pass
+
+    return items
+
+
 def build_nlp_hint_block(preprocessed: Dict) -> str:
     """
     Builds a text block summarising NLP findings to prepend to the LLM prompt.
