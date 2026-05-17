@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 # all items to be flagged regardless of LLM decision).
 _CONFIDENCE_THRESHOLD = float(os.environ.get("TFIDF_CONFIDENCE_THRESHOLD", "0.15"))
 
+_llm = None
+
+
+def _get_llm():
+    global _llm
+    if _llm is None:
+        _llm = ChatOllama(model="llama3.2", temperature=0)
+    return _llm
+
 
 def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
     """
@@ -33,8 +42,6 @@ def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
     except Exception as e:
         logger.warning("TF-IDF confidence computation failed: %s", e)
         return 1.0  # Assume high confidence on error so LLM decision stands
-
-llm = ChatOllama(model="llama3.2", temperature=0)
 
 COMPLIANCE_SYSTEM_PROMPT = """You are a federal grant compliance expert with 20+ years experience in 2 CFR 200 (Uniform Guidance) and nonprofit financial management.
 For each expense line item, you will:
@@ -123,7 +130,7 @@ GRANT AGREEMENT RELEVANT TERMS:
 Compliance determination (JSON only):
 """)
             ])
-            chain = prompt | llm | StrOutputParser()
+            chain = prompt | _get_llm() | StrOutputParser()
             result = chain.invoke({
                 "description": item["description"],
                 "amount": item["amount"],
