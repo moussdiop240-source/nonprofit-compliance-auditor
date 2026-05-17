@@ -159,6 +159,78 @@ def get_store_version() -> Optional[str]:
     return _store_version
 
 
+def check_ecfr_update() -> dict:
+    """
+    Enhancement 3 — check whether a newer 2 CFR Part 200 version is available on eCFR.
+    Returns a dict with keys: current_version, current_date, latest_ecfr_date, update_available.
+    """
+    from tools.regulatory_fetcher import get_latest_version_date
+
+    current = get_store_version() or "none"
+
+    # eCFR-stamped versions are formatted "ecfr-YYYY-MM-DD-<hash>"
+    current_date = None
+    if current.startswith("ecfr-"):
+        parts = current.split("-", 4)
+        if len(parts) >= 4:
+            current_date = f"{parts[1]}-{parts[2]}-{parts[3]}"
+
+    latest = get_latest_version_date()
+    update_available = bool(latest and (current_date is None or latest > current_date))
+
+    return {
+        "current_version": current,
+        "current_date": current_date,
+        "latest_ecfr_date": latest,
+        "update_available": update_available,
+    }
+
+
+def reindex_from_ecfr(persist_dir: str = PERSIST_DIR) -> Optional[Any]:
+    """
+    Enhancement 3 — fetch 2 CFR Part 200 live from eCFR and rebuild the vector index.
+    Version is stamped as 'ecfr-{date}-{content_hash}'.
+    Returns the store instance, or None on failure.
+    """
+    global _store_instance, _store_version
+    import hashlib
+    from tools.regulatory_fetcher import get_latest_version_date, fetch_cfr200_sections
+
+    version_date = get_latest_version_date()
+    docs = fetch_cfr200_sections(version_date)
+
+    if not docs:
+        logger.warning("No sections fetched from eCFR — aborting reindex")
+        return None
+
+    if os.path.exists(persist_dir):
+        shutil.rmtree(persist_dir)
+        logger.info("Cleared old index at %s", persist_dir)
+
+    try:
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+        except ImportError:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+        try:
+            from langchain_chroma import Chroma
+        except ImportError:
+            from langchain_community.vectorstores import Chroma
+    except ImportError:
+        logger.warning("Cannot reindex from eCFR: langchain not available")
+        return None
+
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    _store_instance = Chroma.from_documents(docs, embeddings, persist_directory=persist_dir)
+
+    content_hash = hashlib.sha256(
+        b"".join(d.page_content.encode() for d in docs)
+    ).hexdigest()[:12]
+    _store_version = f"ecfr-{version_date or 'unknown'}-{content_hash}"
+    logger.info("eCFR reindex complete — version: %s (%d sections)", _store_version, len(docs))
+    return _store_instance
+
+
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _compute_dir_hash(directory: str) -> str:
