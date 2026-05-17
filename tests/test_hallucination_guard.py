@@ -1,12 +1,12 @@
 """
 Hallucination-guard tests for the compliance pipeline.
 
-Three LLM hallucination vectors are tested:
-  1. Invalid status strings (not in ComplianceStatus enum)
+Five guard layers are tested:
+  1. Invalid status strings (not in the four-value enum)
   2. LLM overriding original line-item fields (amount, line_number, description …)
   3. Missing / empty required decision fields
-
-Each test first demonstrates the vulnerability, then verifies the guard blocks it.
+  4. Internal consistency invariants (status ↔ requires_human_review ↔ flagged_reason)
+  5. Type coercion and retry logic via invoke_with_guard
 """
 import json
 import pytest
@@ -14,6 +14,8 @@ from unittest.mock import patch, MagicMock
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from agents.hallucination_guard import sanitize_llm_decision, invoke_with_guard
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,3 +190,163 @@ class TestMissingFields:
                            "reasoning": "ok", "flagged_reason": None})
         result = _run_checker(resp)
         assert "requires_human_review" in result["compliance_decisions"][0]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Layer 4 — Internal consistency invariants (tested directly on sanitize_llm_decision)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestConsistencyInvariants:
+    def _decision(self, **overrides) -> dict:
+        base = {
+            "status": "ALLOWABLE",
+            "regulation_cited": "2 CFR 200.474",
+            "reasoning": "ok",
+            "requires_human_review": False,
+            "flagged_reason": None,
+        }
+        return {**base, **overrides}
+
+    def test_requires_review_forces_human_review_true(self):
+        result = sanitize_llm_decision(self._decision(status="REQUIRES_REVIEW", requires_human_review=False))
+        assert result["requires_human_review"] is True
+
+    def test_requires_review_adds_flagged_reason_when_missing(self):
+        result = sanitize_llm_decision(self._decision(status="REQUIRES_REVIEW", flagged_reason=None))
+        assert result.get("flagged_reason")
+
+    def test_allowable_no_review_clears_stale_flagged_reason(self):
+        result = sanitize_llm_decision(self._decision(
+            status="ALLOWABLE", requires_human_review=False, flagged_reason="stale reason from earlier"))
+        assert result["flagged_reason"] is None
+
+    def test_human_review_true_gets_flagged_reason(self):
+        result = sanitize_llm_decision(self._decision(
+            status="CONDITIONALLY_ALLOWABLE", requires_human_review=True, flagged_reason=None))
+        assert result.get("flagged_reason"), "flagged_reason must be set when requires_human_review is True"
+
+    def test_non_dict_input_returns_safe_fallback(self):
+        result = sanitize_llm_decision([{"status": "ALLOWABLE"}])  # type: ignore
+        assert result["status"] == "REQUIRES_REVIEW"
+        assert result["requires_human_review"] is True
+
+    def test_short_citation_replaced_with_default(self):
+        result = sanitize_llm_decision(self._decision(regulation_cited="ok"))
+        assert result["regulation_cited"] != "ok", "Too-short citation must be replaced with safe default"
+
+    def test_empty_reasoning_replaced_with_default(self):
+        result = sanitize_llm_decision(self._decision(reasoning="   "))
+        assert result["reasoning"] and result["reasoning"].strip()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Layer 5 — Type coercion and invoke_with_guard retry logic
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTypeCoercion:
+    def _base(self, **overrides) -> dict:
+        return {
+            "status": "ALLOWABLE",
+            "regulation_cited": "2 CFR 200.474",
+            "reasoning": "ok",
+            "requires_human_review": False,
+            "flagged_reason": None,
+            **overrides,
+        }
+
+    def test_string_true_coerced_to_bool(self):
+        result = sanitize_llm_decision(self._base(requires_human_review="true"))
+        assert result["requires_human_review"] is True
+
+    def test_string_false_coerced_to_bool(self):
+        result = sanitize_llm_decision(self._base(requires_human_review="false"))
+        assert result["requires_human_review"] is False
+
+    def test_integer_one_coerced_to_bool_true(self):
+        result = sanitize_llm_decision(self._base(requires_human_review=1))
+        assert result["requires_human_review"] is True
+
+    def test_integer_zero_coerced_to_bool_false(self):
+        result = sanitize_llm_decision(self._base(requires_human_review=0))
+        assert result["requires_human_review"] is False
+
+
+class TestRetryLogic:
+    """invoke_with_guard is tested directly — independent of the full pipeline mock."""
+
+    def _good_json(self, status: str = "ALLOWABLE") -> str:
+        return json.dumps({
+            "status": status,
+            "regulation_cited": "2 CFR 200.474",
+            "reasoning": "Travel cost is allowable.",
+            "requires_human_review": False,
+            "flagged_reason": None,
+        })
+
+    def test_succeeds_on_first_attempt(self):
+        class GoodChain:
+            def invoke(self, args):
+                return self._good_json()
+            _good_json = lambda self, *_: json.dumps({
+                "status": "ALLOWABLE", "regulation_cited": "2 CFR 200.474",
+                "reasoning": "ok", "requires_human_review": False, "flagged_reason": None,
+            })
+
+        result = invoke_with_guard(GoodChain(), {})
+        assert result["status"] == "ALLOWABLE"
+
+    def test_retries_on_bad_json_then_succeeds(self):
+        good = self._good_json()
+        calls = [0]
+
+        class Flaky:
+            def invoke(self, args):
+                calls[0] += 1
+                return "NOT JSON {{{" if calls[0] == 1 else good
+
+        result = invoke_with_guard(Flaky(), {}, max_retries=2)
+        assert result["status"] == "ALLOWABLE"
+        assert calls[0] == 2
+
+    def test_all_retries_exhausted_returns_requires_review(self):
+        class AlwaysBad:
+            def invoke(self, args):
+                return "ALWAYS INVALID %%"
+
+        result = invoke_with_guard(AlwaysBad(), {}, max_retries=1)
+        assert result["status"] == "REQUIRES_REVIEW"
+        assert result["requires_human_review"] is True
+
+    def test_non_dict_json_returns_requires_review(self):
+        class ArrayChain:
+            def invoke(self, args):
+                return json.dumps([{"status": "ALLOWABLE"}])
+
+        result = invoke_with_guard(ArrayChain(), {}, max_retries=0)
+        assert result["status"] == "REQUIRES_REVIEW"
+
+    def test_chain_exception_returns_requires_review(self):
+        class CrashChain:
+            def invoke(self, args):
+                raise RuntimeError("Ollama connection refused")
+
+        result = invoke_with_guard(CrashChain(), {}, max_retries=0)
+        assert result["status"] == "REQUIRES_REVIEW"
+        assert result["requires_human_review"] is True
+
+    def test_guard_applied_to_successful_retry(self):
+        bad_status_json = json.dumps({
+            "status": "INVENTED_STATUS",
+            "regulation_cited": "2 CFR 200.474",
+            "reasoning": "ok",
+            "requires_human_review": False,
+            "flagged_reason": None,
+        })
+
+        class BadStatus:
+            def invoke(self, args):
+                return bad_status_json
+
+        result = invoke_with_guard(BadStatus(), {}, max_retries=0)
+        assert result["status"] == "REQUIRES_REVIEW", \
+            "Guard must coerce invalid status even when JSON parses successfully"
