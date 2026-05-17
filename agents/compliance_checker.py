@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 # short expense descriptions vs long regulatory text (previously 0.70 caused
 # all items to be flagged regardless of LLM decision).
 _CONFIDENCE_THRESHOLD = float(os.environ.get("TFIDF_CONFIDENCE_THRESHOLD", "0.15"))
+_VALID_STATUSES = frozenset({"ALLOWABLE", "UNALLOWABLE", "CONDITIONALLY_ALLOWABLE", "REQUIRES_REVIEW"})
+_DECISION_KEYS = frozenset({"status", "regulation_cited", "reasoning", "requires_human_review", "flagged_reason"})
 
 _llm = None
 
@@ -23,6 +25,23 @@ def _get_llm():
     if _llm is None:
         _llm = ChatOllama(model="llama3.2", temperature=0)
     return _llm
+
+
+def _sanitize_decision(raw: dict) -> dict:
+    """Guard against LLM hallucinations: strip unknown keys, validate status, fill defaults."""
+    clean = {k: v for k, v in raw.items() if k in _DECISION_KEYS}
+    status = clean.get("status", "")
+    if status not in _VALID_STATUSES:
+        clean["status"] = "REQUIRES_REVIEW"
+        clean["requires_human_review"] = True
+        clean["flagged_reason"] = f"Invalid status '{status}' returned by LLM — manual review required"
+    if not clean.get("regulation_cited"):
+        clean["regulation_cited"] = "2 CFR 200 — see manual review"
+    clean.setdefault("reasoning", "No reasoning provided — manual review required")
+    clean.setdefault("requires_human_review", False)
+    if "flagged_reason" not in clean:
+        clean["flagged_reason"] = None
+    return clean
 
 
 def _compute_tfidf_confidence(description: str, rag_context: str) -> float:
@@ -147,7 +166,7 @@ Compliance determination (JSON only):
                     content = content.split("```")[1]
                     if content.startswith("json"):
                         content = content[4:]
-                decision = json.loads(content)
+                decision = _sanitize_decision(json.loads(content))
             except Exception:
                 decision = {
                     "status": "REQUIRES_REVIEW",
@@ -178,7 +197,7 @@ Compliance determination (JSON only):
                 f"Low RAG confidence score ({confidence:.0%}); manual review recommended",
             )
 
-        full_decision = {**item, **decision}
+        full_decision = {**decision, **item}  # item fields are authoritative; LLM cannot override them
         compliance_decisions.append(full_decision)
 
         if decision["status"] == "ALLOWABLE":
