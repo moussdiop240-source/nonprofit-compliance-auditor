@@ -36,6 +36,8 @@ class AuditState(TypedDict):
     # Agent 1 outputs
     extracted_line_items: List[dict]
     extraction_complete: bool
+    report_format: str        # tabular | list | prose
+    extraction_method: str    # llm | tabular_direct
     # Agent 2 outputs
     compliance_decisions: List[dict]
     flagged_items: List[dict]
@@ -51,6 +53,7 @@ class AuditState(TypedDict):
     report_generation_complete: bool
     # Budget tracking
     grant_budget: dict          # {category: budgeted_amount} extracted from grant
+    budget_analysis: dict       # {category: {spent, budget, exceeded, pct_used}}
     # Supervisor control
     current_agent: str
     messages: List[dict]
