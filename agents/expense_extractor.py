@@ -41,7 +41,7 @@ def extract_expenses(state: dict) -> dict:
         ("human", "Expense Report:\n\n{expense_report}")
     ])
     # Use Ollama's model via LangChain
-    llm = ChatOllama(model="llama3.2", temperature=0)
+    llm = ChatOllama(model="llama3:8b", temperature=0)
     chain = prompt | llm | StrOutputParser()
     result = chain.invoke({"expense_report": augmented_text})
 
