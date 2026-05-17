@@ -67,6 +67,8 @@ class TestCfr200Store:
         mock_embed = MagicMock()
 
         with patch.dict("sys.modules", {
+            "langchain_huggingface": MagicMock(HuggingFaceEmbeddings=MagicMock(return_value=mock_embed)),
+            "langchain_chroma": MagicMock(Chroma=mock_chroma_cls),
             "langchain_community": MagicMock(),
             "langchain_community.vectorstores": MagicMock(Chroma=mock_chroma_cls),
             "langchain_community.embeddings": MagicMock(HuggingFaceEmbeddings=MagicMock(return_value=mock_embed)),

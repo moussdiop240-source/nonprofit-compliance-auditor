@@ -11,11 +11,11 @@ ollama>=0.3.0
 
 # ── Vector database ───────────────────────────────────────────────────────────
 chromadb>=1.5.9
-langchain-chroma>=0.1.4
+langchain-chroma>=1.1.0
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 sentence-transformers>=5.5.0
-langchain-huggingface>=0.1.0
+langchain-huggingface>=1.2.2
 
 # ── PDF handling ──────────────────────────────────────────────────────────────
 pdfplumber>=0.11.0
