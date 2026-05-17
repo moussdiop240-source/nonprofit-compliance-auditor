@@ -74,8 +74,6 @@ def get_grant_store_stats(base_dir: str = ".") -> dict:
     """
     Scan for cached grant Chroma stores (chroma_grant_*) and return summary info.
     """
-    import time
-
     stats: dict = {"store_count": 0, "stores": [], "total_size_mb": 0.0}
     try:
         for entry in sorted(os.listdir(base_dir)):
