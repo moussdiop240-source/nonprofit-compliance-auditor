@@ -22,7 +22,12 @@ from agents.report_writer import write_audit_report
 from agents.supervisor import run_audit
 from graph.hitl_handler import human_review_node
 from graph.multi_agent_graph import build_langgraph, run_graph
-from vectorstores.cfr200_store import get_store_version, reindex as cfr200_reindex
+from vectorstores.cfr200_store import (
+    get_store_version,
+    reindex as cfr200_reindex,
+    check_ecfr_update,
+    reindex_from_ecfr,
+)
 from rag_layer.entity_mapper import create_session as _em_create, complete_session as _em_complete, list_sessions as _em_list
 from rag_layer.pseudonymizer import pseudonymize, redaction_summary
 from rag_layer.retention_policy import run_all as run_retention
@@ -153,16 +158,48 @@ with st.sidebar:
     st.markdown("**2 CFR 200 Knowledge Base**")
     _cfr_version = get_store_version()
     if _cfr_version:
-        st.caption(f"Index version: `{_cfr_version}`")
+        _origin = "eCFR live" if str(_cfr_version).startswith("ecfr-") else "local PDF"
+        st.caption(f"Version: `{_cfr_version}` ({_origin})")
     else:
         st.caption("Index: not yet loaded")
 
+    # Show cached eCFR update status
+    if "ecfr_update_status" not in st.session_state:
+        st.session_state["ecfr_update_status"] = None
+    _ecfr_status = st.session_state.get("ecfr_update_status")
+    if _ecfr_status and _ecfr_status.get("update_available"):
+        st.warning(f"eCFR update available: `{_ecfr_status['latest_ecfr_date']}`")
+
     with st.expander("Update regulatory index"):
-        st.markdown(
-            "Drop updated 2 CFR 200 PDFs into `data/cfr200_docs/` then click **Reindex** "
-            "to rebuild the knowledge base without restarting the app."
-        )
-        if st.button("Reindex CFR200 Store", use_container_width=True):
+        st.markdown("**Live sync from eCFR** (requires internet)")
+        _col1, _col2 = st.columns(2)
+        with _col1:
+            if st.button("Check for Updates", use_container_width=True):
+                with st.spinner("Checking eCFR…"):
+                    try:
+                        _status = check_ecfr_update()
+                        st.session_state["ecfr_update_status"] = _status
+                        if _status["update_available"]:
+                            st.warning(f"Update available: `{_status['latest_ecfr_date']}`")
+                        elif _status["latest_ecfr_date"]:
+                            st.success(f"Up to date (`{_status['latest_ecfr_date']}`)")
+                        else:
+                            st.error("Could not reach eCFR — check network")
+                    except Exception as _e:
+                        st.error(f"Check failed: {_e}")
+        with _col2:
+            if st.button("Sync from eCFR", use_container_width=True):
+                with st.spinner("Fetching 2 CFR Part 200 from eCFR…"):
+                    try:
+                        reindex_from_ecfr()
+                        st.session_state["ecfr_update_status"] = None
+                        st.success(f"Synced — version: `{get_store_version()}`")
+                    except Exception as _e:
+                        st.error(f"Sync failed: {_e}")
+
+        st.divider()
+        st.markdown("**Local PDF reindex** — drop updated PDFs into `data/cfr200_docs/`")
+        if st.button("Reindex from local PDFs", use_container_width=True):
             with st.spinner("Rebuilding 2 CFR 200 vector index…"):
                 try:
                     cfr200_reindex()
