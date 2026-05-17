@@ -1,4 +1,5 @@
 import json
+import os
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -10,6 +11,21 @@ from tools.nlp_utils import (
     enrich_line_items,
     flag_duplicate_items,
 )
+
+# Cap text sent to the LLM — avoids slow inference on large PDF extracts.
+# Override with MAX_EXPENSE_TEXT_CHARS env var if needed.
+_MAX_TEXT_CHARS = int(os.environ.get("MAX_EXPENSE_TEXT_CHARS", "12000"))
+
+# Configurable model — swap in a smaller model (e.g. llama3.2:1b) for faster extraction.
+_extractor_llm = None
+
+
+def _get_extractor_llm():
+    global _extractor_llm
+    if _extractor_llm is None:
+        model = os.environ.get("OLLAMA_EXTRACTOR_MODEL", "llama3.2")
+        _extractor_llm = ChatOllama(model=model, temperature=0)
+    return _extractor_llm
 
 EXTRACTOR_SYSTEM_PROMPT = """You are an expert financial document analyst specializing in nonprofit expense reports.
 Your job is to extract ALL expense line items from the provided expense report.
@@ -59,12 +75,14 @@ def extract_expenses(state: dict) -> dict:
         format_hint = f"[DOCUMENT FORMAT: {report_format.upper()}]\n"
         augmented_text = format_hint + nlp_hints + "\n\n" + text
 
+        if len(augmented_text) > _MAX_TEXT_CHARS:
+            augmented_text = augmented_text[:_MAX_TEXT_CHARS]
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", EXTRACTOR_SYSTEM_PROMPT),
             ("human", "Expense Report:\n\n{expense_report}")
         ])
-        llm = ChatOllama(model="llama3.2", temperature=0)
-        chain = prompt | llm | StrOutputParser()
+        chain = prompt | _get_extractor_llm() | StrOutputParser()
         result = chain.invoke({"expense_report": augmented_text})
 
         try:
